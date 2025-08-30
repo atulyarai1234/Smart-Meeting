@@ -12,6 +12,17 @@ export interface Meeting {
   created_at: string;
 }
 
+export interface MeetingWithCounts {
+  id: string;
+  title: string;
+  status: 'created' | 'processing' | 'transcribed' | 'summarized' | 'error';
+  created_at: string;
+  transcript_count?: number;
+  action_items_count?: number;
+  has_summary: boolean;
+  duration?: number;
+}
+
 export interface TranscriptSegment {
   id: string;
   meeting_id: string;

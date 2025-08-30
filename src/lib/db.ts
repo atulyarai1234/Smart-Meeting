@@ -1,5 +1,5 @@
 import { supabaseAdmin } from './supabaseAdmin';
-import type { Meeting, TranscriptSegment, Summary, ActionItem } from '../types';
+import type { Meeting, TranscriptSegment, Summary, ActionItem, MeetingWithCounts } from '../types';
 
 export async function createMeeting(title: string): Promise<Meeting> {
   const { data, error } = await supabaseAdmin
@@ -67,18 +67,120 @@ export async function updateMeetingStatus(meetingId: string, status: string): Pr
   if (error) throw error;
 }
 
-// Helper function to format time for display
-export function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+// Homepage-specific queries
+export async function getAllMeetings(
+  limit = 50,
+  offset = 0,
+  searchQuery?: string,
+  statusFilter?: string
+): Promise<MeetingWithCounts[]> {
+  let query = supabaseAdmin
+    .from('meetings')
+    .select(`
+      id,
+      title,
+      status,
+      created_at,
+      transcript_segments!inner(count),
+      action_items(count),
+      summaries(id)
+    `);
+
+  // Add search filter
+  if (searchQuery && searchQuery.trim()) {
+    query = query.ilike('title', `%${searchQuery.trim()}%`);
+  }
+
+  // Add status filter
+  if (statusFilter && statusFilter !== 'all') {
+    query = query.eq('status', statusFilter);
+  }
+
+  // Order and pagination
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw error;
+
+  // Transform the data to include counts and duration
+  const meetings: MeetingWithCounts[] = [];
+  
+  for (const meeting of data || []) {
+    // Get transcript segments to calculate duration
+    const { data: segments } = await supabaseAdmin
+      .from('transcript_segments')
+      .select('end_s')
+      .eq('meeting_id', meeting.id);
+
+    const duration = segments && segments.length > 0 
+      ? Math.max(...segments.map(s => s.end_s))
+      : undefined;
+
+    meetings.push({
+      id: meeting.id,
+      title: meeting.title,
+      status: meeting.status,
+      created_at: meeting.created_at,
+      transcript_count: meeting.transcript_segments?.[0]?.count || 0,
+      action_items_count: meeting.action_items?.[0]?.count || 0,
+      has_summary: !!meeting.summaries?.[0]?.id,
+      duration
+    });
+  }
+
+  return meetings;
 }
 
-// Helper to format date for display
-export function formatDate(dateString: string): string {
-  return new Date(dateString).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  });
+export async function getMeetingStats() {
+  // Get total counts by status
+  const { data: statusCounts, error: statusError } = await supabaseAdmin
+    .from('meetings')
+    .select('status')
+    .order('created_at', { ascending: false });
+
+  if (statusError) throw statusError;
+
+  // Count by status
+  const stats = {
+    total: statusCounts?.length || 0,
+    created: statusCounts?.filter(m => m.status === 'created').length || 0,
+    processing: statusCounts?.filter(m => m.status === 'processing').length || 0,
+    transcribed: statusCounts?.filter(m => m.status === 'transcribed').length || 0,
+    summarized: statusCounts?.filter(m => m.status === 'summarized').length || 0,
+    error: statusCounts?.filter(m => m.status === 'error').length || 0,
+  };
+
+  // Get total transcript segments
+  const { count: totalSegments } = await supabaseAdmin
+    .from('transcript_segments')
+    .select('*', { count: 'exact', head: true });
+
+  // Get total action items
+  const { count: totalActionItems } = await supabaseAdmin
+    .from('action_items')
+    .select('*', { count: 'exact', head: true });
+
+  return {
+    ...stats,
+    totalSegments: totalSegments || 0,
+    totalActionItems: totalActionItems || 0
+  };
+}
+
+export async function getRecentMeetings(limit = 5): Promise<MeetingWithCounts[]> {
+  const { data, error } = await supabaseAdmin
+    .from('meetings')
+    .select('id, title, status, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return (data || []).map(meeting => ({
+    ...meeting,
+    transcript_count: 0,
+    action_items_count: 0,
+    has_summary: false
+  }));
 }
